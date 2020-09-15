@@ -50,10 +50,16 @@ public class Mongoose
 		{
 			System.out.println("User is connected to: " + snowflake + "With name: " + voiceChannel.block().getName());
 
-			if (voiceChannel.block().getName().toLowerCase().equals("looking for game"))
+			String voiceChannelName = voiceChannel.block().getName().toLowerCase();
+			if (voiceChannelName.equals("looking for game"))
 			{
 				VoiceChannel availableChannel = getAvailableChannel(guild);
 				moveMember(availableChannel, member);
+			}
+			else if (voiceChannelName.equals("create new game"))
+			{
+				VoiceChannel newChannel = createChannel(guild);
+				moveMember(newChannel, member);
 			}
 		});
 	}

@@ -1,5 +1,7 @@
 plugins {
+	id 'com.github.johnrengelman.shadow' version '6.0.0'
     id 'java'
+    id 'application'
 }
 
 group 'be.huffle'
@@ -12,4 +14,16 @@ repositories {
 dependencies {
     testCompile group: 'junit', name: 'junit', version: '4.12'
     implementation 'com.discord4j:discord4j-core:3.0.10'
+}
+
+application {
+    mainClassName = 'be.huffle.mongoose.App'
+}
+
+jar {
+	manifest {
+		attributes(
+			'Main-Class': 'be.huffle.mongoose.App'
+		)
+	}
 }
