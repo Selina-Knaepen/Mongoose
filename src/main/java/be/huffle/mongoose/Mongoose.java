@@ -1,11 +1,12 @@
 package be.huffle.mongoose;
 
+import discord4j.common.util.Snowflake;
 import discord4j.core.DiscordClient;
-import discord4j.core.DiscordClientBuilder;
 import discord4j.core.event.domain.VoiceStateUpdateEvent;
-import discord4j.core.event.domain.message.MessageCreateEvent;
 import discord4j.core.object.entity.*;
-import discord4j.core.object.util.Snowflake;
+import discord4j.core.object.entity.channel.Channel;
+import discord4j.core.object.entity.channel.GuildChannel;
+import discord4j.core.object.entity.channel.VoiceChannel;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -25,18 +26,20 @@ public class Mongoose
 
 	public void run()
 	{
-		DiscordClient client = new DiscordClientBuilder(token).build();
-		client.getEventDispatcher().on(MessageCreateEvent.class).subscribe(Mongoose::onMessageReceived);
-		client.getEventDispatcher().on(VoiceStateUpdateEvent.class).subscribe(Mongoose::onVoiceStateUpdate);
-		client.login().block();
+		DiscordClient client = DiscordClient.create(token);
+		client.withGateway(gatway ->
+		{
+			return Mono.when(gatway.on(VoiceStateUpdateEvent.class).doOnNext(Mongoose::onVoiceStateUpdate));
+		}).block();
 	}
 
 	private static void onVoiceStateUpdate(VoiceStateUpdateEvent event)
 	{
-		Optional<Snowflake> snowflake = event.getCurrent().getChannelId();
+		Optional<Snowflake> channelSnowflake = event.getCurrent().getChannelId();
 		Mono<VoiceChannel> voiceChannel = event.getCurrent().getChannel();
 		Guild guild = event.getCurrent().getGuild().block();
 		Member member = event.getCurrent().getUser().block().asMember(guild.getId()).block();
+		Optional<Snowflake> categorySnowflake = event.getCurrent().getChannel().block().getCategoryId();
 
 		event.getOld().flatMap(voiceState -> voiceState.getChannel().blockOptional()).ifPresent(oldChannel ->
 		{
@@ -46,25 +49,25 @@ public class Mongoose
 			}
 		});
 
-		snowflake.ifPresent(snowflake1 ->
+		channelSnowflake.ifPresent(snowflake1 ->
 		{
-			System.out.println("User is connected to: " + snowflake + "With name: " + voiceChannel.block().getName());
+			System.out.println("User is connected to: " + channelSnowflake + "With name: " + voiceChannel.block().getName());
 
 			String voiceChannelName = voiceChannel.block().getName().toLowerCase();
 			if (voiceChannelName.equals("looking for game"))
 			{
-				VoiceChannel availableChannel = getAvailableChannel(guild);
+				VoiceChannel availableChannel = getAvailableChannel(guild, categorySnowflake);
 				moveMember(availableChannel, member);
 			}
 			else if (voiceChannelName.equals("create new game"))
 			{
-				VoiceChannel newChannel = createChannel(guild);
+				VoiceChannel newChannel = createChannel(guild, categorySnowflake);
 				moveMember(newChannel, member);
 			}
 		});
 	}
 
-	private static VoiceChannel getAvailableChannel(Guild guild)
+	private static VoiceChannel getAvailableChannel(Guild guild, Optional<Snowflake> categorySnowflake)
 	{
 		int i = 1;
 		Flux<GuildChannel> guildChannelFlux = guild.getChannels();
@@ -82,7 +85,7 @@ public class Mongoose
 				}
 			}
 		}
-		return createChannel(guild);
+		return createChannel(guild, categorySnowflake);
 	}
 
 	private static long getMembersInVoiceChannel(GuildChannel channel)
@@ -105,7 +108,7 @@ public class Mongoose
 		}).subscribe();
 	}
 
-	private static VoiceChannel createChannel(Guild guild)
+	private static VoiceChannel createChannel(Guild guild, Optional<Snowflake> categorySnowflake)
 	{
 		return guild.createVoiceChannel(spec ->
 		{
@@ -142,35 +145,10 @@ public class Mongoose
 			spec.setName(channelName);
 			spec.setPosition(position);
 			spec.setUserLimit(10);
-
-		}).block();
-	}
-
-	private static void onMessageReceived(MessageCreateEvent event)
-	{
-		currentMember = null;
-		if (!event.getMember().isPresent())
-		{
-			return;
-		}
-
-		if (event.getMember().get().isBot())
-		{
-			return;
-		}
-
-		currentMember = event.getMember().get();
-		event.getMessage().getChannel().subscribe(channel -> onMessageReceivedOnChannel(event.getMessage(), channel));
-	}
-
-	private static void onMessageReceivedOnChannel(Message message, MessageChannel channel)
-	{
-		message.getContent().ifPresent(content ->
-		{
-			if (content.toLowerCase().startsWith("mongoose"))
+			categorySnowflake.ifPresent(snowflake ->
 			{
-				channel.createMessage("Hello I am A Mongoose").subscribe();
-			}
-		});
+				spec.setParentId(snowflake);
+			});
+		}).block();
 	}
 }
