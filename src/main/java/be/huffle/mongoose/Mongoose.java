@@ -111,7 +111,7 @@ public class Mongoose
 			if (guildChannel.getType() == Channel.Type.GUILD_TEXT)
 			{
 				channelName = guildChannel.getName();
-				if (channelName.equals("codes-game-" + last))
+				if (channelName.equals("codes-game-" + last) || channelName.equals("speak-but-no-mic-game-" + last))
 				{
 					guildChannel.delete("The channel is not needed anymore").subscribe();
 				}
@@ -195,6 +195,20 @@ public class Mongoose
 			int position = guildChannel.getRawPosition() + 1;
 
 			spec.setName("codes-" + name);
+			categorySnowflake.ifPresent(snowflake ->
+			{
+				spec.setParentId(snowflake);
+			});
+			spec.setPosition(position);
+			spec.setPermissionOverwrites(permissionOverwrites);
+		}).subscribe();
+
+		guild.createTextChannel(spec ->
+		{
+			GuildChannel guildChannel = guild.getChannels().blockFirst();
+			int position = guildChannel.getRawPosition() + 1;
+
+			spec.setName("speak-but-no-mic-" + name);
 			categorySnowflake.ifPresent(snowflake ->
 			{
 				spec.setParentId(snowflake);
