@@ -113,7 +113,7 @@ public class Mongoose
 				channelName = guildChannel.getName();
 				if (channelName.equals("codes-game-" + last) || channelName.equals("speak-but-no-mic-game-" + last))
 				{
-					guildChannel.delete("The channel is not needed anymore").subscribe();
+					guildChannel.delete("The channel is not needed anymore").block();
 				}
 			}
 		}
