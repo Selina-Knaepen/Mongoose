@@ -5,7 +5,6 @@ import discord4j.core.DiscordClient;
 import discord4j.core.event.domain.VoiceStateUpdateEvent;
 import discord4j.core.object.PermissionOverwrite;
 import discord4j.core.object.entity.*;
-import discord4j.core.object.entity.channel.Category;
 import discord4j.core.object.entity.channel.Channel;
 import discord4j.core.object.entity.channel.GuildChannel;
 import discord4j.core.object.entity.channel.VoiceChannel;
@@ -14,15 +13,19 @@ import discord4j.rest.util.Permission;
 import discord4j.rest.util.PermissionSet;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.SignalType;
 
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 
 public class Mongoose
 {
 	private String token;
+	private Runnable runnable = () -> {};
+	private boolean hasCompleted = true;
 
 	public Mongoose(String token)
 	{
@@ -34,12 +37,35 @@ public class Mongoose
 		DiscordClient client = DiscordClient.create(token);
 		client.withGateway(gatway ->
 		{
-			return Mono.when(gatway.on(VoiceStateUpdateEvent.class).doOnNext(Mongoose::onVoiceStateUpdate));
+			return Mono.when(gatway.on(VoiceStateUpdateEvent.class).doOnNext(this::onVoiceStateUpdate));
 		}).block();
 	}
 
-	private static void onVoiceStateUpdate(VoiceStateUpdateEvent event)
+	private void onVoiceStateUpdate(VoiceStateUpdateEvent event)
 	{
+		if (hasCompleted)
+		{
+			hasCompleted = false;
+			Runnable thisRunnable = new VoiceStateUpdateRunnable(this, event);
+			runnable = thisRunnable;
+			thisRunnable.run();
+		}
+		else
+		{
+			Runnable thisRunnable = new VoiceStateUpdateRunnable(this, event);
+			runnable = thisRunnable;
+		}
+	}
+
+	private void hello()
+	{
+		System.out.println("Hello");
+	}
+
+	public Mono<Void> updateChannels(VoiceStateUpdateEvent event)
+	{
+		Mono<Void> result = Mono.empty();
+
 		Optional<Snowflake> channelSnowflake = event.getCurrent().getChannelId();
 		Mono<VoiceChannel> voiceChannel = event.getCurrent().getChannel();
 		Guild guild = event.getCurrent().getGuild().block();
@@ -50,26 +76,40 @@ public class Mongoose
 				.blockOptional()
 				.flatMap(VoiceChannel::getCategoryId);
 
-		event.getOld().flatMap(voiceState -> voiceState.getChannel().blockOptional()).ifPresent(oldChannel ->
+		event.getOld().ifPresent(voiceState ->
 		{
-			if (oldChannel.getName().startsWith("Game"))
+			Mono<VoiceChannel> channel = voiceState.getChannel();
+			result.and(channel);
+			channel.subscribe(oldChannel ->
 			{
-				if (getMembersInVoiceChannel(oldChannel) == 0)
+				if (oldChannel.getName().startsWith("Game"))
 				{
-					deleteTextChannel(oldChannel.getName(), guild);
-					Role role = getRole(guild, oldChannel.getName());
-					if (role != null)
+					if (getMembersInVoiceChannel(oldChannel) == 0)
 					{
-						role.delete().subscribe();
+						result.and(deleteTextChannel(oldChannel.getName(), guild));
+						Optional<Role> role = getRole(guild, oldChannel.getName());
+						role.ifPresent(r ->
+						{
+							Mono<Void> deleteRole = r.delete();
+							result.and(deleteRole);
+							deleteRole.subscribe();
+						});
+						Mono<Void> deleteOldChannel = oldChannel.delete("The channel is empty");
+						result.and(deleteOldChannel);
+						deleteOldChannel.subscribe();
 					}
-					oldChannel.delete("The channel is empty").subscribe();
+					else
+					{
+						Optional<Role> role = getRole(guild, oldChannel.getName());
+						role.ifPresent(r ->
+						{
+							Mono<Void> deleteRoleMember = member.removeRole(r.getId());
+							result.and(deleteRoleMember);
+							deleteRoleMember.subscribe();
+						});
+					}
 				}
-				else
-				{
-					Role role = getRole(guild, oldChannel.getName());
-					member.removeRole(role.getId()).subscribe();
-				}
-			}
+			});
 		});
 
 		channelSnowflake.ifPresent(snowflake1 ->
@@ -80,27 +120,43 @@ public class Mongoose
 			if (voiceChannelName.toLowerCase().equals("looking for game"))
 			{
 				VoiceChannel availableChannel = getAvailableChannel(guild, categorySnowflake);
-				Role role = getRole(guild, availableChannel.getName());
-				member.addRole(role.getId()).subscribe();
-				moveMember(availableChannel, member);
+				Optional<Role> role = getRole(guild, availableChannel.getName());
+				role.ifPresent(r ->
+				{
+					member.addRole(r.getId()).subscribe();
+					result.and(moveMember(availableChannel, member));
+				});
 			}
 			else if (voiceChannelName.toLowerCase().equals("create new game"))
 			{
 				VoiceChannel newChannel = createChannel(guild, categorySnowflake);
-				Role role = getRole(guild, newChannel.getName());
-				member.addRole(role.getId()).subscribe();
-				moveMember(newChannel, member);
+				Optional<Role> role = getRole(guild, newChannel.getName());
+				role.ifPresent(r ->
+				{
+					Mono<Void> addRoleMember = member.addRole(r.getId());
+					result.and(addRoleMember);
+					addRoleMember.subscribe();
+					result.and(moveMember(newChannel, member));
+				});
 			}
 			else if (voiceChannelName.toLowerCase().startsWith("game"))
 			{
-				Role role = getRole(guild, voiceChannelName);
-				member.addRole(role.getId()).subscribe();
+				Optional<Role> role = getRole(guild, voiceChannelName);
+				role.ifPresent(r ->
+				{
+					Mono<Void> addRoleMember = member.addRole(r.getId());
+					result.and(addRoleMember);
+					addRoleMember.subscribe();
+				});
 			}
 		});
+
+		return result;
 	}
 
-	private static void deleteTextChannel(String name, Guild guild)
+	private Mono<Void> deleteTextChannel(String name, Guild guild)
 	{
+		Mono<Void> result = Mono.empty();
 		List<GuildChannel> guildChannels = guild.getChannels().collectList().block();
 		String[] words = name.split(" ");
 		String last = words[1];
@@ -113,15 +169,16 @@ public class Mongoose
 				channelName = guildChannel.getName();
 				if (channelName.equals("codes-game-" + last) || channelName.equals("speak-but-no-mic-game-" + last))
 				{
-					guildChannel.delete("The channel is not needed anymore").block();
+					Mono<Void> deleteChannel = guildChannel.delete("The channel is not needed anymore");
+					result.and(deleteChannel);
+					deleteChannel.subscribe();
 				}
 			}
 		}
-
-
+		return result;
 	}
 
-	private static Role getRole(Guild guild, String name)
+	private Optional<Role> getRole(Guild guild, String name)
 	{
 		List<Role> roles = guild.getRoles().collectList().block();
 		String roleName = "";
@@ -131,14 +188,14 @@ public class Mongoose
 			roleName = role.getName();
 			if (roleName.equals(name))
 			{
-				return role;
+				return Optional.of(role);
 			}
 		}
 
-		return null;
+		return Optional.empty();
 	}
 
-	private static VoiceChannel getAvailableChannel(Guild guild, Optional<Snowflake> categorySnowflake)
+	private VoiceChannel getAvailableChannel(Guild guild, Optional<Snowflake> categorySnowflake)
 	{
 		int i = 1;
 		Flux<GuildChannel> guildChannelFlux = guild.getChannels();
@@ -159,7 +216,7 @@ public class Mongoose
 		return createChannel(guild, categorySnowflake);
 	}
 
-	private static long getMembersInVoiceChannel(GuildChannel channel)
+	private long getMembersInVoiceChannel(GuildChannel channel)
 	{
 		return channel.getGuild().block().getMembers().filter(member ->
 		{
@@ -171,15 +228,17 @@ public class Mongoose
 		}).count().block();
 	}
 
-	private static void moveMember(VoiceChannel voiceChannel, Member member)
+	private Mono<Void> moveMember(VoiceChannel voiceChannel, Member member)
 	{
-		member.edit(guildMemberEditSpec ->
+		Mono<Void> editMember = member.edit(guildMemberEditSpec ->
 		{
 			guildMemberEditSpec.setNewVoiceChannel(voiceChannel.getId());
-		}).subscribe();
+		});
+		editMember.subscribe();
+		return editMember;
 	}
 
-	private static void createTextChannel(Guild guild, String name, Optional<Snowflake> categorySnowflake)
+	private void createTextChannel(Guild guild, String name, Optional<Snowflake> categorySnowflake)
 	{
 		Role role = createRoleOnServer(guild, name);
 		PermissionOverwrite overwriteRole = PermissionOverwrite.forRole(role.getId(), PermissionSet.of(Permission.VIEW_CHANNEL), PermissionSet.none());
@@ -218,7 +277,7 @@ public class Mongoose
 		}).subscribe();
 	}
 
-	private static Role createRoleOnServer(Guild guild, String name)
+	private Role createRoleOnServer(Guild guild, String name)
 	{
 		return guild.createRole(spec ->
 		{
@@ -228,7 +287,7 @@ public class Mongoose
 		}).block();
 	}
 
-	private static VoiceChannel createChannel(Guild guild, Optional<Snowflake> categorySnowflake)
+	private VoiceChannel createChannel(Guild guild, Optional<Snowflake> categorySnowflake)
 	{
 		return guild.createVoiceChannel(spec ->
 		{
@@ -272,5 +331,25 @@ public class Mongoose
 				spec.setParentId(snowflake);
 			});
 		}).block();
+	}
+
+	public Runnable getRunnable()
+	{
+		return runnable;
+	}
+
+	public void setRunnable(Runnable runnable)
+	{
+		this.runnable = runnable;
+	}
+
+	public boolean isHasCompleted()
+	{
+		return hasCompleted;
+	}
+
+	public void setHasCompleted(boolean hasCompleted)
+	{
+		this.hasCompleted = hasCompleted;
 	}
 }
