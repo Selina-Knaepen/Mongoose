@@ -4,6 +4,7 @@ import discord4j.common.util.Snowflake;
 import discord4j.core.DiscordClient;
 import discord4j.core.event.domain.VoiceStateUpdateEvent;
 import discord4j.core.object.PermissionOverwrite;
+import discord4j.core.object.VoiceState;
 import discord4j.core.object.entity.*;
 import discord4j.core.object.entity.channel.Channel;
 import discord4j.core.object.entity.channel.GuildChannel;
@@ -11,14 +12,13 @@ import discord4j.core.object.entity.channel.VoiceChannel;
 import discord4j.rest.util.Color;
 import discord4j.rest.util.Permission;
 import discord4j.rest.util.PermissionSet;
+import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.SignalType;
 
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
-import java.util.function.Consumer;
 
 
 public class Mongoose
@@ -57,19 +57,16 @@ public class Mongoose
 		}
 	}
 
-	private void hello()
-	{
-		System.out.println("Hello");
-	}
-
 	public Mono<Void> updateChannels(VoiceStateUpdateEvent event)
 	{
 		Mono<Void> result = Mono.empty();
 
 		Optional<Snowflake> channelSnowflake = event.getCurrent().getChannelId();
 		Mono<VoiceChannel> voiceChannel = event.getCurrent().getChannel();
-		Guild guild = event.getCurrent().getGuild().block();
-		Member member = event.getCurrent().getUser().block().asMember(guild.getId()).block();
+		VoiceState currentVoiceState = event.getCurrent();
+		Guild guild = currentVoiceState.getGuild().block();
+		User user = currentVoiceState.getUser().block();
+		Member member = user.asMember(guild.getId()).block();
 		Optional<Snowflake> categorySnowflake = event
 				.getCurrent()
 				.getChannel()
@@ -80,33 +77,19 @@ public class Mongoose
 		{
 			Mono<VoiceChannel> channel = voiceState.getChannel();
 			result.and(channel);
+
 			channel.subscribe(oldChannel ->
 			{
-				if (oldChannel.getName().startsWith("Game"))
+				String oldChannelName = oldChannel.getName();
+				if (oldChannelName.startsWith("Game"))
 				{
 					if (getMembersInVoiceChannel(oldChannel) == 0)
 					{
-						result.and(deleteTextChannel(oldChannel.getName(), guild));
-						Optional<Role> role = getRole(guild, oldChannel.getName());
-						role.ifPresent(r ->
-						{
-							Mono<Void> deleteRole = r.delete();
-							result.and(deleteRole);
-							deleteRole.subscribe();
-						});
-						Mono<Void> deleteOldChannel = oldChannel.delete("The channel is empty");
-						result.and(deleteOldChannel);
-						deleteOldChannel.subscribe();
+						result.and(onChannelEmpty(oldChannel,guild));
 					}
 					else
 					{
-						Optional<Role> role = getRole(guild, oldChannel.getName());
-						role.ifPresent(r ->
-						{
-							Mono<Void> deleteRoleMember = member.removeRole(r.getId());
-							result.and(deleteRoleMember);
-							deleteRoleMember.subscribe();
-						});
+						result.and(onMemberLeaveGame(guild, oldChannelName, member));
 					}
 				}
 			});
@@ -114,42 +97,107 @@ public class Mongoose
 
 		channelSnowflake.ifPresent(snowflake1 ->
 		{
-			System.out.println("User is connected to: " + channelSnowflake + "With name: " + voiceChannel.block().getName());
-
+			System.out.println(user.getUsername() + " is connected to: " + channelSnowflake + "With name: " + voiceChannel.block().getName());
 			String voiceChannelName = voiceChannel.block().getName();
+
 			if (voiceChannelName.toLowerCase().equals("looking for game"))
 			{
-				VoiceChannel availableChannel = getAvailableChannel(guild, categorySnowflake);
-				Optional<Role> role = getRole(guild, availableChannel.getName());
-				role.ifPresent(r ->
-				{
-					member.addRole(r.getId()).subscribe();
-					result.and(moveMember(availableChannel, member));
-				});
+				result.and(onEnterLookingForGame(guild, categorySnowflake, member));
 			}
 			else if (voiceChannelName.toLowerCase().equals("create new game"))
 			{
-				VoiceChannel newChannel = createChannel(guild, categorySnowflake);
-				Optional<Role> role = getRole(guild, newChannel.getName());
-				role.ifPresent(r ->
-				{
-					Mono<Void> addRoleMember = member.addRole(r.getId());
-					result.and(addRoleMember);
-					addRoleMember.subscribe();
-					result.and(moveMember(newChannel, member));
-				});
+				result.and(onEnterCreateNewGame(guild, categorySnowflake, member));
 			}
 			else if (voiceChannelName.toLowerCase().startsWith("game"))
 			{
-				Optional<Role> role = getRole(guild, voiceChannelName);
-				role.ifPresent(r ->
-				{
-					Mono<Void> addRoleMember = member.addRole(r.getId());
-					result.and(addRoleMember);
-					addRoleMember.subscribe();
-				});
+				result.and(onEnterGame(guild, voiceChannelName, member));
 			}
 		});
+
+		return result;
+	}
+
+	private Mono<Void> onEnterGame(Guild guild, String voiceChannelName, Member member)
+	{
+		Mono<Void> result = Mono.empty();
+
+		Optional<Role> role = getRole(guild, voiceChannelName);
+		role.ifPresent(r ->
+		{
+			Mono<Void> addRoleMember = member.addRole(r.getId());
+			result.and(addRoleMember);
+			addRoleMember.subscribe();
+		});
+
+		return result;
+	}
+
+	private Mono<Void> onEnterCreateNewGame(Guild guild, Optional<Snowflake> categorySnowflake, Member member)
+	{
+		Mono<Void> result = Mono.empty();
+
+		VoiceChannel newChannel = createChannel(guild, categorySnowflake);
+		Optional<Role> role = getRole(guild, newChannel.getName());
+		role.ifPresent(r ->
+		{
+			Mono<Void> addRoleMember = member.addRole(r.getId());
+			result.and(addRoleMember);
+			addRoleMember.subscribe();
+			result.and(moveMember(newChannel, member));
+		});
+
+		return result;
+	}
+
+	private Mono<Void> onEnterLookingForGame(Guild guild, Optional<Snowflake> categorySnowflake, Member member)
+	{
+		Mono<Void> result = Mono.empty();
+
+		VoiceChannel availableChannel = getAvailableChannel(guild, categorySnowflake);
+		Optional<Role> role = getRole(guild, availableChannel.getName());
+		role.ifPresent(r ->
+		{
+			member.addRole(r.getId()).subscribe();
+			result.and(moveMember(availableChannel, member));
+		});
+
+		return result;
+	}
+
+	private Mono<Void> onMemberLeaveGame(Guild guild, String oldChannelName, Member member)
+	{
+		Mono<Void> result = Mono.empty();
+		Optional<Role> role = getRole(guild, oldChannelName);
+
+		role.ifPresent(r ->
+		{
+			Mono<Void> deleteRoleMember = member.removeRole(r.getId());
+			result.and(deleteRoleMember);
+			deleteRoleMember.subscribe();
+		});
+
+
+		return result;
+	}
+
+	private Mono<Void> onChannelEmpty(VoiceChannel oldChannel, Guild guild)
+	{
+		Mono<Void> result = Mono.empty();
+		String oldChannelName = oldChannel.getName();
+
+		result.and(deleteTextChannel(oldChannelName, guild));
+		Optional<Role> role = getRole(guild, oldChannelName);
+
+		role.ifPresent(r ->
+		{
+			Mono<Void> deleteRole = r.delete();
+			result.and(deleteRole);
+			deleteRole.subscribe();
+		});
+
+		Mono<Void> deleteOldChannel = oldChannel.delete("The channel is empty");
+		result.and(deleteOldChannel);
+		deleteOldChannel.subscribe();
 
 		return result;
 	}
@@ -247,27 +295,22 @@ public class Mongoose
 		HashSet<PermissionOverwrite> permissionOverwrites = new HashSet<>();
 		permissionOverwrites.add(overwriteRole);
 		permissionOverwrites.add(overwriteEveryone);
+		GuildChannel guildChannel = guild.getChannels().blockFirst();
+		int position = guildChannel.getRawPosition() + 1;
 
+		createTextChannelWithName("codes-" + name, categorySnowflake, position, permissionOverwrites, guild);
+		createTextChannelWithName("speak-but-no-mic-" + name, categorySnowflake, position, permissionOverwrites,
+				guild);
+	}
+
+	private void createTextChannelWithName(String name,
+										   Optional<Snowflake> categorySnowflake, int position,
+										   HashSet<PermissionOverwrite> permissionOverwrites,
+										   Guild guild)
+	{
 		guild.createTextChannel(spec ->
 		{
-			GuildChannel guildChannel = guild.getChannels().blockFirst();
-			int position = guildChannel.getRawPosition() + 1;
-
-			spec.setName("codes-" + name);
-			categorySnowflake.ifPresent(snowflake ->
-			{
-				spec.setParentId(snowflake);
-			});
-			spec.setPosition(position);
-			spec.setPermissionOverwrites(permissionOverwrites);
-		}).subscribe();
-
-		guild.createTextChannel(spec ->
-		{
-			GuildChannel guildChannel = guild.getChannels().blockFirst();
-			int position = guildChannel.getRawPosition() + 1;
-
-			spec.setName("speak-but-no-mic-" + name);
+			spec.setName(name);
 			categorySnowflake.ifPresent(snowflake ->
 			{
 				spec.setParentId(snowflake);
