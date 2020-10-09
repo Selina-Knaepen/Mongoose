@@ -5,14 +5,16 @@ import discord4j.core.DiscordClient;
 import discord4j.core.event.domain.VoiceStateUpdateEvent;
 import discord4j.core.object.PermissionOverwrite;
 import discord4j.core.object.VoiceState;
-import discord4j.core.object.entity.*;
+import discord4j.core.object.entity.Guild;
+import discord4j.core.object.entity.Member;
+import discord4j.core.object.entity.Role;
+import discord4j.core.object.entity.User;
 import discord4j.core.object.entity.channel.Channel;
 import discord4j.core.object.entity.channel.GuildChannel;
 import discord4j.core.object.entity.channel.VoiceChannel;
 import discord4j.rest.util.Color;
 import discord4j.rest.util.Permission;
 import discord4j.rest.util.PermissionSet;
-import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -215,7 +217,7 @@ public class Mongoose
 			if (guildChannel.getType() == Channel.Type.GUILD_TEXT)
 			{
 				channelName = guildChannel.getName();
-				if (channelName.equals("codes-game-" + last) || channelName.equals("speak-but-no-mic-game-" + last))
+				if (channelName.equals("codes-and-talking-game-" + last))
 				{
 					Mono<Void> deleteChannel = guildChannel.delete("The channel is not needed anymore");
 					result.and(deleteChannel);
@@ -298,9 +300,7 @@ public class Mongoose
 		GuildChannel guildChannel = guild.getChannels().blockFirst();
 		int position = guildChannel.getRawPosition() + 1;
 
-		createTextChannelWithName("codes-" + name, categorySnowflake, position, permissionOverwrites, guild);
-		createTextChannelWithName("speak-but-no-mic-" + name, categorySnowflake, position, permissionOverwrites,
-				guild);
+		createTextChannelWithName("codes-and-talking-" + name, categorySnowflake, position, permissionOverwrites, guild);
 	}
 
 	private void createTextChannelWithName(String name,
